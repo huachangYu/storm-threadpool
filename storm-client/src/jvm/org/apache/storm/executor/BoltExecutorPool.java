@@ -54,7 +54,7 @@ public class BoltExecutorPool {
     private final List<BoltExecutor> threads = new ArrayList<>();
     private final List<BoltWorker> workers;
     private final ConcurrentHashMap<String, BlockingQueue<BoltTask>> taskQueues;
-    private final AtomicInteger totalTaskCount;
+    private final AtomicInteger blockedThreadsNum;
     private boolean running; // to improve performance, don't use violate
     private final int maxTasks;
 
@@ -65,7 +65,7 @@ public class BoltExecutorPool {
     public BoltExecutorPool(int coreThreads, int maxTasks) {
         this.coreThreads = coreThreads;
         this.taskQueues = new ConcurrentHashMap<>(coreThreads);
-        this.totalTaskCount = new AtomicInteger(0);
+        this.blockedThreadsNum = new AtomicInteger();
         this.workers = new ArrayList<>(coreThreads);
         this.running = true;
         this.maxTasks = maxTasks;
@@ -80,7 +80,9 @@ public class BoltExecutorPool {
             List<BoltExecutor> notEmptyThreads = threads.stream()
                     .filter(t -> taskQueues.get(t.getName()).size() > 0).collect(Collectors.toList());
             while (notEmptyThreads.isEmpty()) {
+                blockedThreadsNum.getAndIncrement();
                 emptyQueueWait.await();
+                blockedThreadsNum.getAndDecrement();
                 notEmptyThreads = threads.stream()
                         .filter(t -> taskQueues.get(t.getName()).size() > 0).collect(Collectors.toList());
             }
@@ -121,7 +123,6 @@ public class BoltExecutorPool {
                     ThreadLocalRandom.current().nextInt(maxWeightBoltThreads.size())).getName());
             while (!queue.isEmpty() && tasks.size() < maxTaskSize) {
                 tasks.add(queue.remove());
-                totalTaskCount.getAndDecrement();
             }
             return tasks;
         } finally {
@@ -171,8 +172,7 @@ public class BoltExecutorPool {
 
     public void submit(String threadName, BoltTask task) throws InterruptedException {
         taskQueues.get(threadName).put(task);
-        int c = totalTaskCount.getAndIncrement();
-        if (c == 0) {
+        if (blockedThreadsNum.get() == 0) {
             signalNotEmpty();
         }
     }
